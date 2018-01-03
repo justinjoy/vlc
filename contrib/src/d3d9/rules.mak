@@ -1,7 +1,7 @@
 # generate Direct3D9 temporary include
 
 ifdef HAVE_CROSS_COMPILE
-IDL_INC_PATH = /usr/include/wine/windows/
+IDL_INC_PATH = /usr/include/wine-development/windows/
 else
 #ugly way to get the default location of standard idl files
 IDL_INC_PATH = /`echo $(MSYSTEM) | tr A-Z a-z`/$(BUILD)/include
