@@ -64,7 +64,11 @@ struct stream_sys_t
     int         i_poll_timeout;
     int         i_latency;
     size_t      i_chunk_size;
+#if defined(_WIN32)
+    HANDLE      h_event;
+#else
     int         i_pipe_fds[2];
+#endif
 };
 
 static void srt_wait_interrupted(void *p_data)
@@ -72,10 +76,14 @@ static void srt_wait_interrupted(void *p_data)
     stream_t *p_stream = p_data;
     stream_sys_t *p_sys = p_stream->p_sys;
     msg_Dbg( p_stream, "Waking up srt_epoll_wait");
+#if defined(_WIN32)
+    SetEvent( p_sys->h_event );
+#else
     if ( write( p_sys->i_pipe_fds[1], &( bool ) { true }, sizeof( bool ) ) < 0 )
     {
         msg_Err( p_stream, "Failed to send data to pipe");
     }
+#endif
 }
 
 static int Control(stream_t *p_stream, int i_query, va_list args)
@@ -115,8 +123,32 @@ static block_t *BlockSRT(stream_t *p_stream, bool *restrict eof)
 
     vlc_interrupt_register( srt_wait_interrupted, p_stream);
 
-    SRTSOCKET ready[2];
+#if defined(_WIN32)
+    DWORD ready = WaitForMultipleObjectsEx (1, &p_sys->h_event, FALSE, p_sys->i_poll_timeout, TRUE);
 
+    if ( ready == WAIT_FAILED )
+    {
+        DWORD errcode = GetLastError();
+        wchar_t *msg = NULL;
+
+        FormatMessageW (FORMAT_MESSAGE_ALLOCATE_BUFFER
+                        |FORMAT_MESSAGE_IGNORE_INSERTS
+                        |FORMAT_MESSAGE_FROM_SYSTEM,
+                        NULL, errcode, 0,
+                        (LPWSTR) &msg, 0, NULL);
+        msg_Err( p_stream, msg );
+        goto skip;
+    }
+    else if ( ready >= WAIT_OBJECT_0 && ready < WAIT_OBJECT_0 + 1)
+    {
+        /* The handle has been signaled */
+        ResetEvent( p_sys->h_event );
+        msg_Dbg( p_stream, "Cancelled running" );
+        goto endofstream;
+    }
+    
+#else
+    SRTSOCKET ready[2];
     if ( srt_epoll_wait( p_sys->i_poll_id,
         ready, &(int) { 2 }, NULL, 0, p_sys->i_poll_timeout,
         &(int) { p_sys->i_pipe_fds[0] }, &(int) { 1 }, NULL, 0 ) == -1 )
@@ -140,6 +172,7 @@ static block_t *BlockSRT(stream_t *p_stream, bool *restrict eof)
         msg_Dbg( p_stream, "Cancelled running" );
         goto endofstream;
     }
+#endif
 
     int stat = srt_recvmsg( p_sys->sock, (char *)pkt->p_buffer, p_sys->i_chunk_size );
 
@@ -240,16 +273,19 @@ static int Open(vlc_object_t *p_this)
         goto failed;
     }
 
+#if defined(_WIN32)
+    p_sys->h_event = CreateEvent (NULL, TRUE, FALSE, NULL);
+#else
     if ( vlc_pipe( p_sys->i_pipe_fds ) != 0 )
     {
         msg_Err( p_stream, "Failed to create pipe fds." );
         goto failed;
     }
-
     fcntl( p_sys->i_pipe_fds[0], F_SETFL, O_NONBLOCK | fcntl( p_sys->i_pipe_fds[0], F_GETFL ) );
+    srt_epoll_add_ssock( p_sys->i_poll_id, p_sys->i_pipe_fds[0], &(int) { SRT_EPOLL_IN } );
+#endif
 
     srt_epoll_add_usock( p_sys->i_poll_id, p_sys->sock, &(int) { SRT_EPOLL_IN } );
-    srt_epoll_add_ssock( p_sys->i_poll_id, p_sys->i_pipe_fds[0], &(int) { SRT_EPOLL_IN } );
 
     stat = srt_connect( p_sys->sock, res->ai_addr, sizeof (struct sockaddr) );
 
@@ -278,8 +314,12 @@ failed:
         freeaddrinfo( res );
     }
 
+#if defined(_WIN32)
+    CloseHandle( p_sys->h_event );
+#else
     vlc_close( p_sys->i_pipe_fds[0] );
     vlc_close( p_sys->i_pipe_fds[1] );
+#endif
 
     if ( p_sys->i_poll_id != -1 )
     {
@@ -306,8 +346,12 @@ static void Close(vlc_object_t *p_this)
     msg_Dbg( p_stream, "closing server" );
     srt_close( p_sys->sock );
 
+#if defined(_WIN32)
+    CloseHandle( p_sys->h_event );
+#else
     vlc_close( p_sys->i_pipe_fds[0] );
     vlc_close( p_sys->i_pipe_fds[1] );
+#endif
 }
 
 /* Module descriptor */
