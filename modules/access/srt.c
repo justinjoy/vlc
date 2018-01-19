@@ -25,7 +25,9 @@
 #endif
 
 #include <errno.h>
-#include <fcntl.h>
+#ifdef HAVE_POLL
+# include <poll.h>
+#endif
 
 #include <vlc_common.h>
 #include <vlc_interrupt.h>
@@ -73,7 +75,22 @@ static void *Thread(void *p_data)
 
     for(;;)
     {
-        int stat;
+
+        struct pollfd ufd;
+        ufd.fd = srt_socket_get_fd( p_sys->sock, SRTF_RECEIVER );
+        ufd.events = POLLIN;
+
+        if (ufd.fd < 1)
+        {
+            msg_Err( p_stream, "Invalid SRT socket(reason: %s)", srt_getlasterror_str() );
+            break;
+        }
+
+        if (poll( &ufd, 1, 10 ) == -1 )
+        {
+            break;
+        }
+
         block_t *pkt = block_Alloc( i_chunk_size );
 
         if ( unlikely( pkt == NULL ) )
@@ -81,9 +98,7 @@ static void *Thread(void *p_data)
             break;
         }
 
-        block_cleanup_push( pkt );
-        stat = srt_recvmsg( p_sys->sock, (char *)pkt->p_buffer, i_chunk_size );
-        vlc_cleanup_pop();
+        int stat = srt_recvmsg( p_sys->sock, (char *)pkt->p_buffer, i_chunk_size );
 
         if ( stat == SRT_ERROR )
         {
@@ -196,8 +211,8 @@ static int Open(vlc_object_t *p_this)
         goto failed;
     }
 
-    /* Make SRT blocking */
-    srt_setsockopt( p_sys->sock, 0, SRTO_SNDSYN, &(bool) { true }, sizeof( bool ) );
+    /* Make SRT non-blocking */
+    srt_setsockopt( p_sys->sock, 0, SRTO_SNDSYN, &(bool) { false }, sizeof( bool ) );
 
     /* Make sure TSBPD mode is enable (SRT mode) */
     srt_setsockopt( p_sys->sock, 0, SRTO_TSBPDMODE, &(int) { 1 }, sizeof( int ) );
