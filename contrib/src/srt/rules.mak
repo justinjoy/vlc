@@ -3,11 +3,10 @@
 SRT_VERSION := 1.2.2
 SRT_URL := $(GITHUB)/Haivision/srt/archive/v$(SRT_VERSION).tar.gz
 
-ifndef HAVE_WIN32
 ifdef BUILD_NETWORK
 PKGS += srt
 endif
-endif
+
 ifeq ($(call need_pkg,"srt >= 1.2.2"),)
 PKGS_FOUND += srt
 endif
